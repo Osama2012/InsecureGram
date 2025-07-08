@@ -231,7 +231,7 @@ Choose one of the following methods to start the API server:
 - Step 1: Clone the repository
 
 ```bash
-git clone https://github.com/your-username/insecuregram.git
+git clone https://github.com/Osama2012/InsecureGram.git
 cd insecuregram
 ```
 
